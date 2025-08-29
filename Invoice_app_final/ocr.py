@@ -123,6 +123,7 @@ def _ocr_page_with_nanonets(image_path: str, max_new_tokens: int) -> str:
     with torch.no_grad():
         outputs = _ocr_model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
     markdown = _ocr_processor.batch_decode(outputs, skip_special_tokens=True)[0]
+    print(markdown)
     # free temp tensors
     del inputs, outputs
     return strip_prompt_from_output(markdown)
