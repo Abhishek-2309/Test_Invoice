@@ -1,0 +1,30 @@
+# === Core Server ===
+fastapi
+gunicorn
+uvicorn[standard]
+httpx
+jinja2
+orjson
+
+# === File Handling & PDFs ===
+pymupdf                 # fast PDF rendering (fitz)
+pillow
+python-multipart
+opencv-python-headless
+
+# === Transformers + Torch ===
+torch>=2.1.0
+torchvision
+timm
+transformers>=4.38.0
+accelerate
+safetensors
+
+# === Quantized LLM (Unsloth + optional 4-bit) ===
+unsloth
+bitsandbytes
+
+# === Utility ===
+pydantic>=2.0
+typing-extensions
+uuid
