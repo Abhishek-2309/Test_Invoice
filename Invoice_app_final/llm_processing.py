@@ -15,6 +15,7 @@ class LLMResult:
 _JSON_BLOCK = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 def _extract_first_json_block(text: str) -> str:
+    print(text)
     m = _JSON_BLOCK.search(text)
     if not m:
         raise ValueError("No JSON object found in model output")
