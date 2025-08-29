@@ -41,21 +41,57 @@ class UnslothEngine:
         self.max_new_tokens = 1024
 
     async def generate(self, prompt: str) -> str:
+        """
+        Use chat_template so we can disable thinking/scratchpad in the prompt formatting.
+        """
+        import torch
+
         def _run():
-            inputs = self.tokenizer(prompt, return_tensors="pt")
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user",   "content": prompt},
+            ]
+
+            inputs = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                enable_thinking=False,     
+                return_tensors="pt",
+            )
+            if hasattr(inputs, "to"):
+                input_ids = inputs
+                attention_mask = None
+            else:
+                # assume dict-like
+                input_ids = inputs["input_ids"]
+                attention_mask = inputs.get("attention_mask", None)
+
             device = next(self.model.parameters()).device
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            input_ids = input_ids.to(device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+
+            gen_kwargs = dict(
+                input_ids=input_ids,
+                do_sample=False,
+                max_new_tokens=self.max_new_tokens,
+            )
+            if attention_mask is not None:
+                gen_kwargs["attention_mask"] = attention_mask
+
             with torch.no_grad():
-                out = self.model.generate(
-                    **inputs,
-                    do_sample=False,
-                    max_new_tokens=self.max_new_tokens,
-                )
+                out = self.model.generate(**gen_kwargs)
+
             text = self.tokenizer.decode(out[0], skip_special_tokens=True)
-            # If the model echoes the prompt, trim it
-            return text[len(prompt):] if text.startswith(prompt) else text
+
+            idx = text.find("{")
+            if idx > 0:
+                text = text[idx:]
+            return text
 
         return await asyncio.to_thread(_run)
+
 
 async def load_global_engine(cfg: WarmupConfig):
     global _engine, _engine_info
