@@ -37,7 +37,7 @@ class UnslothEngine:
         )
         self.model.eval()
         self.model_name = cfg.model
-        self.max_new_tokens = 1024
+        self.max_new_tokens = 2048
 
     async def generate(self, prompt: str) -> str:
         """
