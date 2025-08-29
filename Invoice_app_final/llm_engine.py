@@ -34,7 +34,6 @@ class UnslothEngine:
             load_in_4bit=cfg.load_in_4bit,
             load_in_8bit=cfg.load_in_8bit,
             device_map=cfg.device_map,
-            enable_thinking = False
         )
         self.model.eval()
         self.model_name = cfg.model
