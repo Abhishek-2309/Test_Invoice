@@ -19,6 +19,8 @@ timm
 transformers>=4.38.0
 accelerate
 safetensors
+autoawq 
+autoawq-kernels
 
 # === Quantized LLM (Unsloth + optional 4-bit) ===
 unsloth
