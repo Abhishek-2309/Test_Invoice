@@ -202,7 +202,7 @@ class AWQEngine:
         # ---- Config from env ----
         self.model_id = os.getenv("LLM_MODEL", "Qwen/Qwen3-8B")
         self.device_map = os.getenv("LLM_DEVICE_MAP", "cuda:0")  # pin to GPU1 via "cuda:1" in .env
-        self.max_new_tokens = int(os.getenv("LLM_MAX_NEW_TOKENS", "1024"))
+        self.max_new_tokens = int(os.getenv("LLM_MAX_NEW_TOKENS", "2048"))
         self.max_ctx = int(os.getenv("MAX_MODEL_LEN", "8192"))
         self.reserve = int(os.getenv("LLM_GEN_RESERVE_TOKENS", "384"))
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
@@ -247,7 +247,7 @@ class AWQEngine:
         """
         def _run() -> str:
             # Keep room for output tokens
-            max_len = max(1024, self.max_ctx - self.reserve)
+            max_len = max(2048, self.max_ctx - self.reserve)
 
             toks = _apply_qwen_chat_template(
                 self.tokenizer,
@@ -302,6 +302,6 @@ def get_engine_info() -> Dict[str, Any]:
         "model": os.getenv("LLM_MODEL", "unknown"),
         "device_map": os.getenv("LLM_DEVICE_MAP", "cuda:0"),
         "max_model_len": os.getenv("MAX_MODEL_LEN", "8192"),
-        "max_new_tokens": os.getenv("LLM_MAX_NEW_TOKENS", "1024"),
+        "max_new_tokens": os.getenv("LLM_MAX_NEW_TOKENS", "2048"),
     }
 
