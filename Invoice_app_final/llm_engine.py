@@ -1,3 +1,4 @@
+"""
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -40,9 +41,7 @@ class UnslothEngine:
         self.max_new_tokens = 2048
 
     async def generate(self, prompt: str) -> str:
-        """
-        Use chat_template so we can disable thinking/scratchpad in the prompt formatting.
-        """
+
         import torch
 
         def _run():
@@ -120,3 +119,189 @@ def get_engine():
 
 def get_engine_info():
     return dict(_engine_info)
+"""
+# llm_engine.py — AWQ (4-bit) backend for Qwen3-8B on ARM (no Triton needed)
+
+import os
+import asyncio
+import warnings
+from typing import Dict, Any
+
+# Make 100% sure nothing tries to pull Triton / xFormers paths.
+os.environ.setdefault("PYTORCH_DISABLE_TRITON", "1")
+os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+os.environ.setdefault("TRANSFORMERS_NO_XFORMERS", "1")
+os.environ.setdefault("UNSLOTH_DISABLE_XFORMERS", "1")
+
+import torch
+from transformers import AutoTokenizer
+
+try:
+    # Package name is "autoawq" (pip), import path is "awq"
+    from awq import AutoAWQForCausalLM
+except Exception as e:
+    raise RuntimeError(
+        "AutoAWQ is not installed. Run: pip install autoawq autoawq-kernels"
+    ) from e
+
+
+def _maybe_bool(env: str, default: bool) -> bool:
+    v = os.getenv(env)
+    if v is None:
+        return default
+    return v.lower() in ("1", "true", "t", "yes", "y")
+
+
+def _apply_qwen_chat_template(
+    tokenizer: AutoTokenizer,
+    prompt_text: str,
+    max_ctx: int,
+    disable_thinking: bool = True,
+) -> Dict[str, torch.Tensor]:
+    """
+    Wraps the plain prompt into Qwen-style chat messages and returns tokenized tensors.
+    We try to pass enable_thinking=False when the tokenizer supports it.
+    """
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": prompt_text},
+    ]
+
+    kwargs = dict(
+        tokenize=True,
+        add_generation_prompt=True,
+        truncation=True,
+        max_length=max_ctx,
+        return_tensors="pt",
+    )
+
+    # Some Qwen tokenizers accept enable_thinking; others don't — guard it.
+    if disable_thinking:
+        try:
+            kwargs["enable_thinking"] = False  # Qwen3 supports this; safe to ignore if not
+        except Exception:
+            pass
+
+    try:
+        input_ids = tokenizer.apply_chat_template(messages, **kwargs)
+    except TypeError:
+        # Older tokenizers without the arg — retry without it
+        kwargs.pop("enable_thinking", None)
+        input_ids = tokenizer.apply_chat_template(messages, **kwargs)
+    return {"input_ids": input_ids}
+
+
+class AWQEngine:
+    """
+    Minimal, robust AWQ engine:
+      - Loads an *already* AWQ-quantized Qwen3-8B (recommended), e.g. a repo/path with awq_config.json.
+      - Or, if you point to a base FP16 model, you should quantize offline once and then load the quantized dir.
+    """
+
+    def __init__(self) -> None:
+        # ---- Config from env ----
+        self.model_id = os.getenv("LLM_MODEL", "Qwen/Qwen3-8B")
+        self.device_map = os.getenv("LLM_DEVICE_MAP", "cuda:0")  # pin to GPU1 via "cuda:1" in .env
+        self.max_new_tokens = int(os.getenv("LLM_MAX_NEW_TOKENS", "1024"))
+        self.max_ctx = int(os.getenv("MAX_MODEL_LEN", "8192"))
+        self.reserve = int(os.getenv("LLM_GEN_RESERVE_TOKENS", "384"))
+        self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+        self.top_p = float(os.getenv("LLM_TOP_P", "1.0"))
+        self.do_sample = _maybe_bool("LLM_DO_SAMPLE", False)
+
+        # ---- Tokenizer ----
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_id,
+            use_fast=True,
+            trust_remote_code=True,
+        )
+
+        # Pad token handling to avoid "pad token == eos" warnings
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        if getattr(self.tokenizer, "chat_template", None) is None:
+            warnings.warn(
+                "Tokenizer has no chat_template; generation may be less controlled."
+            )
+
+        # ---- Model (AWQ-quantized) ----
+        # Expecting LLM_MODEL to point to an AWQ-quantized repo/folder.
+        # If you pass a base model here, AWQ will try to load quantized weights if present.
+        self.model = AutoAWQForCausalLM.from_quantized(
+            self.model_id,
+            trust_remote_code=True,
+            fuse_layers=True,
+            safetensors=True,
+            device_map=self.device_map,
+            # You can set max_seq_len to trim KV cache usage on smaller VRAM if needed:
+            # max_seq_len=self.max_ctx,
+        ).eval()
+
+        # Ensure eos id known
+        self.eos_id = self.tokenizer.eos_token_id
+
+    async def generate(self, prompt: str) -> str:
+        """
+        Deterministic (default do_sample=False) generation of the JSON string.
+        Keeps a context headroom so we don't overflow the model's window.
+        """
+        def _run() -> str:
+            # Keep room for output tokens
+            max_len = max(1024, self.max_ctx - self.reserve)
+
+            toks = _apply_qwen_chat_template(
+                self.tokenizer,
+                prompt_text=prompt,
+                max_ctx=max_len,
+                disable_thinking=True,
+            )
+
+            input_ids = toks["input_ids"]
+            # Always pass attention_mask to avoid pad/eos issues
+            attention_mask = torch.ones_like(input_ids)
+
+            device = next(self.model.parameters()).device
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+
+            gen_kwargs: Dict[str, Any] = dict(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=self.do_sample,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                eos_token_id=self.eos_id,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+
+            with torch.no_grad():
+                out = self.model.generate(**gen_kwargs)
+
+            text = self.tokenizer.decode(out[0], skip_special_tokens=True)
+
+            # Return only from the first JSON brace if present
+            i = text.find("{")
+            return text[i:] if i >= 0 else text
+
+        return await asyncio.to_thread(_run)
+
+
+# ---- Module-level singletons to match your app's current imports ----
+_engine: AWQEngine | None = None
+
+def get_engine() -> AWQEngine:
+    global _engine
+    if _engine is None:
+        _engine = AWQEngine()
+    return _engine
+
+def get_engine_info() -> Dict[str, Any]:
+    return {
+        "backend": "awq",
+        "model": os.getenv("LLM_MODEL", "unknown"),
+        "device_map": os.getenv("LLM_DEVICE_MAP", "cuda:0"),
+        "max_model_len": os.getenv("MAX_MODEL_LEN", "8192"),
+        "max_new_tokens": os.getenv("LLM_MAX_NEW_TOKENS", "1024"),
+    }
+
